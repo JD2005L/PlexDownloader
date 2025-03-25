@@ -10,11 +10,13 @@ General usage:
 This script connects to your Plex server, finds photo sections and album directories,
 and downloads each photo (skipping files that already exist locally). It provides simplified progress feedback.
 
-You can also supply a list of album/directory names in INCLUDE_ALBUMS to only download those specific ones.
+You can also supply a list of album/directory names in INCLUDE_ALBUMS to only download those specific top-level albums.
+Nested albums (sub-albums) inside an included album will be processed regardless of their title.
 """
 
 import os
 import re
+import time
 import requests
 import urllib3
 import xml.etree.ElementTree as ET
@@ -25,17 +27,13 @@ import logging
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 ###############################################################################
-# Only download albums whose titles match one of these entries.
-# If this list is empty, ALL albums will be processed.
+# Only download top-level albums whose titles match one of these entries.
+# If this list is empty, ALL top-level albums will be processed.
 ###############################################################################
 INCLUDE_ALBUMS = [
-    # Example usage:
-    # "Album1",
-    # "Album2",
-    # "Album3",
-    # "Album4",
-    # "Album5",
-    # etc...
+    "Example1",
+    "Example2",
+    "Example3"
 ]
 
 def sanitize_filename(name):
@@ -54,7 +52,7 @@ def download_file(url, dest_path):
     except Exception as e:
         logging.error("    Error downloading %s: %s", url, e)
 
-def download_photo(photo, dest_dir, base_url, token):
+def download_photo(photo, dest_dir, base_url, token, download_delay):
     """
     Given a photo element, extract its file part and download it.
     """
@@ -83,8 +81,10 @@ def download_photo(photo, dest_dir, base_url, token):
 
     download_file(download_url, dest_path)
     logging.info("    [Downloaded] %s", filename)
+    if download_delay > 0:
+        time.sleep(download_delay)
 
-def process_album(album_url, album_title, base_url, token, album_dir):
+def process_album(album_url, album_title, base_url, token, album_dir, download_delay):
     logging.info("")
     logging.info("  Album: %s", album_title)
 
@@ -101,35 +101,45 @@ def process_album(album_url, album_title, base_url, token, album_dir):
         logging.error("    XML parse error in album '%s': %s", album_title, e)
         return
 
-    # Find photo items (either <Photo> or <Metadata type="photo">).
-    photos = root.findall('.//Photo')
+    # Process photos in the current album.
+    photos = root.findall('./Photo')
     if not photos:
-        photos = root.findall('.//Metadata[@type="photo"]')
-
+        photos = root.findall('./Metadata[@type="photo"]')
     num_photos = len(photos)
     logging.info("    Total photos in '%s': %d", album_title, num_photos)
-
     for i, photo in enumerate(photos, start=1):
         logging.info("    Photo %d of %d", i, num_photos)
-        download_photo(photo, album_dir, base_url, token)
+        download_photo(photo, album_dir, base_url, token, download_delay)
+
+    # Recursively process any nested sub-albums.
+    sub_albums = root.findall('./Directory')
+    if sub_albums:
+        logging.info("    Found %d nested album(s) in '%s'", len(sub_albums), album_title)
+    for sub in sub_albums:
+        sub_album_title = sub.get("title", "untitled")
+        sub_album_key = sub.get("key")
+        sub_album_dir = os.path.join(album_dir, sanitize_filename(sub_album_title))
+        os.makedirs(sub_album_dir, exist_ok=True)
+        sub_album_url = f"{base_url}{sub_album_key}?includeChildren=1&X-Plex-Token={token}"
+        process_album(sub_album_url, sub_album_title, base_url, token, sub_album_dir, download_delay)
 
 def main():
     parser = argparse.ArgumentParser(description="Download all photos from a Plex photo section and its albums.")
     parser.add_argument("--base_url", required=True, help="Base Plex URL (e.g., https://your.plex.server:port)")
     parser.add_argument("--token", required=True, help="Your Plex token")
     parser.add_argument("--download_dir", default="./plex_photos", help="Directory to save downloaded photos")
-    parser.add_argument("--verbose", action="store_true", help="Enable verbose output (if set, more debug messages may appear)")
+    parser.add_argument("--verbose", action="store_true", help="Enable verbose output")
+    parser.add_argument("--download_delay", default=0, type=float, help="Delay between downloads in seconds")
     args = parser.parse_args()
 
-    # Use a simple logging format with only the message text.
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
 
     base_url = args.base_url.rstrip("/")
     token = args.token
     download_dir = args.download_dir
+    download_delay = args.download_delay
     os.makedirs(download_dir, exist_ok=True)
 
     logging.info("\nRequesting library sections...")
@@ -182,9 +192,9 @@ def main():
             logging.info("  Top-level photos: %d", len(top_photos))
             for i, photo in enumerate(top_photos, start=1):
                 logging.info("    Photo %d of %d", i, len(top_photos))
-                download_photo(photo, section_dir, base_url, token)
+                download_photo(photo, section_dir, base_url, token, download_delay)
 
-        # Process album directories.
+        # Process top-level album directories.
         album_dirs = items_root.findall(".//Directory")
         if album_dirs:
             logging.info("  Album directories found: %d", len(album_dirs))
@@ -193,17 +203,15 @@ def main():
             album_key = album.get("key")
             album_title = album.get("title", "untitled")
 
-            # Check if we are including only certain albums:
+            # Only filter top-level albums.
             if INCLUDE_ALBUMS and album_title not in INCLUDE_ALBUMS:
                 logging.info("  Skipping album (not in INCLUDE_ALBUMS): %s", album_title)
                 continue
 
             album_subdir = os.path.join(section_dir, sanitize_filename(album_title))
             os.makedirs(album_subdir, exist_ok=True)
-
             album_url = f"{base_url}{album_key}?includeChildren=1&X-Plex-Token={token}"
-            process_album(album_url, album_title, base_url, token, album_subdir)
+            process_album(album_url, album_title, base_url, token, album_subdir, download_delay)
 
 if __name__ == "__main__":
     main()
-
