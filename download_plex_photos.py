@@ -5,7 +5,7 @@ Author: James@Levac.net
 Date: 03/24/2025
 
 General usage:
-    python download_plex_photos.py --base_url "https://your.plex.server:port" --token "YOUR_PLEX_TOKEN" --download_dir "./plex_photos" --verbose --download_delay 1
+    python download_plex_photos.py --base_url "https://your.plex.server:port" --token "YOUR_PLEX_TOKEN" --download_dir "./plex_photos" --verbose --download_delay 0
 
 This script connects to your Plex server, finds photo sections and album directories,
 and downloads each photo (skipping files that already exist locally). It provides simplified progress feedback.
